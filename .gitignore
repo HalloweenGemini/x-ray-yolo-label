@@ -1,0 +1,35 @@
+# 이미지와 라벨 폴더 제외
+static/
+labels.txt
+
+# Python 관련 파일 제외
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 가상환경 제외
+venv/
+ENV/
+
+# IDE 관련 파일 제외
+.idea/
+.vscode/
+*.swp
+*.swo 

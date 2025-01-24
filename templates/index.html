@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>골절 이미지 라벨링</title>
+    <style>
+        .container {
+            display: flex;
+            height: 100vh;
+            margin: 0;
+        }
+        .sidebar {
+            width: 250px;
+            background-color: #f5f5f5;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #ddd;
+        }
+        .main-content {
+            flex: 1;
+            padding: 20px;
+            text-align: center;
+        }
+        .image-container {
+            position: relative;
+            display: inline-block;
+        }
+        .btn-0 {
+            background-color: green;
+            color: white;
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-1 {
+            background-color: red;
+            color: white;
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            cursor: pointer;
+        }
+        .nav-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            cursor: pointer;
+        }
+        .nav-btn:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #image-display {
+            max-width: 800px;
+            margin: 20px;
+        }
+        #canvas-layer {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            cursor: crosshair !important;
+            z-index: 1000;
+        }
+        .image-list-item {
+            padding: 8px;
+            cursor: pointer;
+            border-bottom: 1px solid #ddd;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .image-list-item:hover {
+            background-color: #e0e0e0;
+        }
+        .image-list-item.active {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .controls {
+            margin: 10px;
+        }
+        .bbox-info {
+            margin: 10px;
+            font-size: 14px;
+        }
+        .navigation {
+            margin-top: 20px;
+        }
+        #image-list {
+            max-height: calc(100vh - 100px);
+            overflow-y: auto;
+        }
+        .image-list-item.labeled {
+            border-left: 4px solid #4CAF50;
+        }
+        .progress-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 200px;
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.3s ease;
+        }
+        .progress-text {
+            text-align: center;
+            margin-top: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="progress-container">
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-text" id="progress-text">0%</div>
+    </div>
+    <div class="container">
+        <div class="sidebar">
+            <h3>이미지 목록</h3>
+            <div id="image-list">
+                <!-- 이미지 목록이 여기에 동적으로 추가됩니다 -->
+            </div>
+        </div>
+        <div class="main-content">
+            <h2>현재 이미지: <span id="current-image"></span></h2>
+            <div class="image-container">
+                <img id="image-display" src="">
+                <canvas id="canvas-layer"></canvas>
+            </div>
+            <div class="bbox-info">
+                <p>바운딩 박스 좌표: <span id="bbox-coords"></span></p>
+                <button onclick="clearBBox()">박스 지우기</button>
+            </div>
+            <div class="controls">
+                <button class="btn-0" onclick="saveLabel('0')">애매한 골절 (0)</button>
+                <button class="btn-1" onclick="saveLabel('1')">골절 (1)</button>
+            </div>
+            <div class="navigation">
+                <button class="nav-btn" onclick="previousImage()" id="prev-btn">이전</button>
+                <button class="nav-btn" onclick="nextImage()" id="next-btn">다음</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // @ts-ignore
+        let images = {{ images|tojson|safe }};
+        let imageBoxes = {{ existing_labels|tojson|safe }};  // 기존 라벨 정보 로드
+        console.log("Loaded images:", images);
+        console.log("Loaded existing labels:", imageBoxes);
+        let currentIndex = 0;
+        let isDrawing = false;
+        let startX, startY;
+        let currentBBox = null;
+        let canvas, ctx, img;
+        
+        function initCanvas() {
+            canvas = document.getElementById('canvas-layer');
+            ctx = canvas.getContext('2d');
+            img = document.getElementById('image-display');
+
+            img.onload = function() {
+                canvas.width = img.width;
+                canvas.height = img.height;
+                redrawAllBoxes();
+            };
+
+            // 캔버스 이벤트 리스너 설정
+            canvas.addEventListener('mousedown', function(e) {
+                const rect = canvas.getBoundingClientRect();
+                startX = e.clientX - rect.left;
+                startY = e.clientY - rect.top;
+                isDrawing = true;
+            });
+
+            canvas.addEventListener('mousemove', function(e) {
+                if (!isDrawing) return;
+
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                redrawAllBoxes();  // 기존 박스들 다시 그리기
+                
+                // 현재 그리고 있는 박스 표시
+                const width = x - startX;
+                const height = y - startY;
+                ctx.beginPath();
+                ctx.strokeStyle = 'blue';
+                ctx.lineWidth = 2;
+                ctx.rect(startX, startY, width, height);
+                ctx.stroke();
+            });
+
+            canvas.addEventListener('mouseup', function(e) {
+                if (!isDrawing) return;
+
+                isDrawing = false;
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                const width = x - startX;
+                const height = y - startY;
+
+                currentBBox = {
+                    x: Math.min(startX, x),
+                    y: Math.min(startY, y),
+                    width: Math.abs(width),
+                    height: Math.abs(height)
+                };
+
+                updateBBoxInfo();
+            });
+        }
+
+        function updateImageList() {
+            const imageList = document.getElementById('image-list');
+            imageList.innerHTML = '';
+            images.forEach((image, index) => {
+                const div = document.createElement('div');
+                div.className = `image-list-item ${index === currentIndex ? 'active' : ''}`;
+                const shortName = image.split('_').slice(-2).join('_');
+                
+                // 라벨링된 이미지 표시
+                if (imageBoxes[image] && imageBoxes[image].length > 0) {
+                    div.className += ' labeled';
+                }
+                
+                div.textContent = shortName;
+                div.title = image;
+                div.onclick = () => {
+                    currentIndex = index;
+                    displayImage();
+                };
+                imageList.appendChild(div);
+            });
+        }
+
+        function displayImage() {
+            if (currentIndex < images.length) {
+                const currentImage = images[currentIndex];
+                document.getElementById('current-image').textContent = currentImage;
+                document.getElementById('image-display').src = '/static/images/' + currentImage;
+                currentBBox = null;
+                updateBBoxInfo();
+                updateImageList();
+                updateNavigationButtons();
+                
+                // 이미지 로드 후 저장된 박스들 다시 그리기
+                const img = document.getElementById('image-display');
+                img.onload = function() {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    redrawAllBoxes();
+                };
+            }
+        }
+
+        function updateNavigationButtons() {
+            document.getElementById('prev-btn').disabled = currentIndex === 0;
+            document.getElementById('next-btn').disabled = currentIndex === images.length - 1;
+        }
+
+        function previousImage() {
+            if (currentIndex > 0) {
+                currentIndex--;
+                displayImage();
+            }
+        }
+
+        function nextImage() {
+            if (currentIndex < images.length - 1) {
+                currentIndex++;
+                displayImage();
+            }
+        }
+
+        function drawBBox(x, y, width, height, label) {
+            ctx.beginPath();
+            ctx.strokeStyle = label === '0' ? 'green' : 'red';
+            ctx.lineWidth = 2;
+            ctx.rect(x, y, width, height);
+            ctx.stroke();
+            
+            // 라벨 텍스트 표시
+            ctx.fillStyle = label === '0' ? 'green' : 'red';
+            ctx.font = '12px Arial';
+            ctx.fillText(label === '0' ? '애매한 골절' : '골절', x + 5, y + 15);
+        }
+
+        function redrawAllBoxes() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const currentBoxes = imageBoxes[images[currentIndex]] || [];
+            console.log("Drawing boxes:", currentBoxes);  // 디버깅용
+            
+            currentBoxes.forEach(box => {
+                // YOLO 형식(중심 좌표)에서 캔버스 좌표로 변환
+                const width = box.width * canvas.width;
+                const height = box.height * canvas.height;
+                const x = (box.x * canvas.width) - (width/2);  // 중심점에서 왼쪽 상단으로 변환
+                const y = (box.y * canvas.height) - (height/2);
+                
+                console.log("Drawing box at:", {x, y, width, height, label: box.label});  // 디버깅용
+                drawBBox(x, y, width, height, box.label);
+            });
+        }
+
+        function updateBBoxInfo() {
+            const coordsSpan = document.getElementById('bbox-coords');
+            const currentImage = images[currentIndex];
+            const boxes = imageBoxes[currentImage] || [];
+            
+            if (boxes.length > 0) {
+                coordsSpan.innerHTML = boxes.map((box, idx) => {
+                    // YOLO 좌표를 픽셀 좌표로 변환하여 표시
+                    const pixelX = Math.round(box.x * canvas.width);
+                    const pixelY = Math.round(box.y * canvas.height);
+                    const pixelWidth = Math.round(box.width * canvas.width);
+                    const pixelHeight = Math.round(box.height * canvas.height);
+                    
+                    return `Box ${idx + 1} (${box.label}): x=${pixelX}, y=${pixelY}, w=${pixelWidth}, h=${pixelHeight}`;
+                }).join('<br>');
+            } else {
+                coordsSpan.textContent = '없음';
+            }
+        }
+
+        function updateProgress() {
+            const totalImages = images.length;
+            const labeledImages = Object.keys(imageBoxes).length;
+            const progress = (labeledImages / totalImages) * 100;
+            
+            document.getElementById('progress-fill').style.width = `${progress}%`;
+            document.getElementById('progress-text').textContent = 
+                `${labeledImages}/${totalImages} (${Math.round(progress)}%)`;
+        }
+
+        function clearBBox() {
+            const currentImage = images[currentIndex];
+            imageBoxes[currentImage] = [];  // 현재 이미지의 모든 박스 제거
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            currentBBox = null;
+            updateBBoxInfo();
+            updateProgress();  // 프로그레스 업데이트 추가
+        }
+
+        function saveLabel(label) {
+            if (!currentBBox) {
+                alert('바운딩 박스를 먼저 그려주세요!');
+                return;
+            }
+
+            const currentImage = images[currentIndex];
+            if (!imageBoxes[currentImage]) {
+                imageBoxes[currentImage] = [];
+            }
+
+            // 현재 박스를 YOLO 형식으로 변환 (중심점 기준)
+            const normalizedBox = {
+                x: (currentBBox.x + currentBBox.width/2) / canvas.width,
+                y: (currentBBox.y + currentBBox.height/2) / canvas.height,
+                width: Math.abs(currentBBox.width) / canvas.width,
+                height: Math.abs(currentBBox.height) / canvas.height,
+                label: label
+            };
+
+            // 현재 박스에 라벨 추가하고 즉시 그리기
+            imageBoxes[currentImage].push(normalizedBox);
+            redrawAllBoxes();  // 즉시 화면에 그리기
+
+            console.log("Saving box:", normalizedBox);  // 디버깅용
+
+            // 바운딩 박스 정보 서버에 저장
+            fetch('/save_label', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image: currentImage,
+                    boxes: imageBoxes[currentImage]
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                currentBBox = null;
+                updateBBoxInfo();
+                updateImageList();
+                updateProgress();
+            });
+        }
+
+        // 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            initCanvas();
+            displayImage();
+            updateImageList();
+            updateNavigationButtons();
+            updateProgress();
+        });
+
+        // 키보드 네비게이션
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowLeft') {
+                previousImage();
+            } else if (e.key === 'ArrowRight') {
+                nextImage();
+            }
+        });
+    </script>
+</body>
+</html> 
